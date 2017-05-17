@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Check if $SPARK_HOME is set, exit if not
+if [ -z $SPARK_HOME ]; then
+    echo '$SPARK_HOME is not set, exiting'
+    exit 1
+fi
+
+# Build path
+PACKAGE_DIR=`python -c 'import pyspark_loglikelihood; import os; print os.path.abspath(os.path.dirname(pyspark_loglikelihood.__file__))'`
+
+# Submit application - (optional) switch to `user_similarity.py`
+SUBMIT_PATH="$PACKAGE_DIR/item_similarity.py"
+
+if [ $? -ne 0 ] || [ ! -d "$PACKAGE_DIR" ]; then
+    echo "pyspark-loglikelihood: pkg not found, exiting."
+    exit 1
+fi
+
+if [ ! -f "$SUBMIT_PATH" ]; then
+    echo "pyspark-loglikelihood: item_similarity not found, exiting."
+    exit 1
+fi
+
+# Detect the platform (similar to $OSTYPE)
+OS="`uname`"
+MASTER="yarn"
+
+case $OS in
+  'Linux')
+    OS='Linux'
+    MASTER='yarn'
+    ;;
+  'Darwin')
+    OS='Mac'
+    MASTER='local'
+    ;;
+  *)
+    echo "Operating system ($OS) is not supported!"
+    exit 1
+    ;;
+esac
+
+
+# Download and re-format the movielens 100k dataset.
+wget -O - http://files.grouplens.org/datasets/movielens/ml-100k/u.data | cut -f1 -f2 | tr '\t' ',' > input.csv
+
+# Upload data set to hadoop
+hadoop fs -rm -r /tmp/item-sim &> /dev/null
+hadoop fs -mkdir -p /tmp/item-sim &> /dev/null
+hadoop fs -moveFromLocal input.csv /tmp/item-sim/input.csv &> /dev/null
+
+# Bootstap script with spark-submit command line
+$SPARK_HOME/bin/spark-submit \
+    --master $MASTER $SUBMIT_PATH \
+	/tmp/item-sim/input.csv /tmp/item-sim/output \
+	--maxPrefs=10000 \
+	--maxSimilaritiesPerItem 100
+
+# Merge parquet files back to csv format
+hadoop fs -getmerge /tmp/item-sim/output /tmp/result.csv &> /dev/null
+
+# Delete hdfs temporary files
+hadoop fs -rm -rf /tmp/item-sim &> /dev/null
+
+# Show results
+head /tmp/result.csv
